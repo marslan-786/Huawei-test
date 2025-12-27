@@ -20,24 +20,27 @@ const (
 	TargetPhoneNumber = "3177635849" // Apna number yahan likhein
 	TargetURL         = "https://id5.cloud.huawei.com/CAS/mobile/standard/register/wapRegister.html?reqClientType=7&loginChannel=7000000&regionCode=hk&loginUrl=https%3A%2F%2Fid5.cloud.huawei.com%2FCAS%2Fmobile%2Fstandard%2FwapLogin.html&lang=en-us&themeName=huawei#/wapRegister/regByPhone"
 	Port              = ":8080"
-	CaptureDir        = "./captures" // Tasveeren yahan save hongi
+	CaptureDir        = "./captures"
 )
 
+// --- Global State ---
 var (
-	mu isRunning bool // Bot running status check karne k liye
+	// FIX: Variable declaration ab theek hai
+	isRunning bool       // Bot chal raha hai ya nahi
+	mu        sync.Mutex // Safety lock
 )
 
 func main() {
-	// 1. Ensure Capture Directory Exists
+	// 1. Capture Directory banayein
 	if _, err := os.Stat(CaptureDir); os.IsNotExist(err) {
-		os.Mkdir(CaptureDir, 0755)
+		os.Mkdir(CaptureDir, 0777)
 	}
 
-	// 2. Start Server
+	// 2. Setup Web Server
 	r := gin.Default()
 	r.LoadHTMLGlob("templates/*")
 	
-	// Static files serve karein (Taake saved images browser main khul sakein)
+	// Saved images ko browser par dikhane k liye allow karein
 	r.Static("/captures", "./captures")
 
 	// Home Page
@@ -45,13 +48,11 @@ func main() {
 		c.HTML(http.StatusOK, "index.html", nil)
 	})
 
-	// API: Get List of Saved Images (Refresh karne k liye)
+	// Gallery API (Images ki list dega)
 	r.GET("/gallery", func(c *gin.Context) {
 		files, _ := filepath.Glob(filepath.Join(CaptureDir, "*.jpg"))
-		// Sort files to ensure order (frame_001, frame_002...)
-		sort.Strings(files)
+		sort.Strings(files) // Puraani se nayi tartib
 		
-		// Paths clean karein web k liye
 		var images []string
 		for _, f := range files {
 			images = append(images, "/captures/"+filepath.Base(f))
@@ -59,19 +60,33 @@ func main() {
 		c.JSON(200, images)
 	})
 
-	// API: Start Bot
+	// Start Bot API
 	r.POST("/start-bot", func(c *gin.Context) {
-		if mu {
-			c.JSON(400, gin.H{"status": "Already Running", "number": TargetPhoneNumber})
+		mu.Lock()
+		if isRunning {
+			mu.Unlock()
+			c.JSON(400, gin.H{"status": "Busy", "message": "Bot already running!"})
 			return
 		}
-		// Purani tasveeren delete karein (Fresh Start)
+		isRunning = true
+		mu.Unlock()
+
+		// Purani pics delete karein
 		oldFiles, _ := filepath.Glob(filepath.Join(CaptureDir, "*.jpg"))
 		for _, f := range oldFiles {
 			os.Remove(f)
 		}
 
-		go runHuaweiBot(TargetPhoneNumber)
+		// Bot ko background main chalayein
+		go func() {
+			defer func() {
+				mu.Lock()
+				isRunning = false
+				mu.Unlock()
+			}()
+			runHuaweiBot(TargetPhoneNumber)
+		}()
+
 		c.JSON(200, gin.H{"status": "Started", "number": TargetPhoneNumber})
 	})
 
@@ -81,19 +96,16 @@ func main() {
 
 // --- Bot Logic ---
 func runHuaweiBot(phoneNumber string) {
-	mu = true
-	defer func() { mu = false }()
+	log.Println("Starting Bot Logic for:", phoneNumber)
 
-	log.Println("Testing Number:", phoneNumber)
-
-	// Browser Setup (Headless but stable)
+	// Browser Setup
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("no-sandbox", true),
-		chromedp.Flag("disable-dev-shm-usage", true), // Memory crash se bachata hai
+		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.WindowSize(1280, 800),
-		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"),
+		chromedp.UserAgent("Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"),
 	)
 
 	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
@@ -102,61 +114,53 @@ func runHuaweiBot(phoneNumber string) {
 	ctx, cancel := chromedp.NewContext(allocCtx)
 	defer cancel()
 
-	// Timeout set karein taake agar atak jaye to 2 minute baad band ho
-	ctx, cancel = context.WithTimeout(ctx, 2*time.Minute)
+	ctx, cancel = context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
-	// Frame Counter
 	frameID := 0
 	
-	// Helper to save screenshot to DISK
-	saveFrame := func(stepName string) chromedp.ActionFunc {
+	// Helper: Save Image to Disk
+	saveFrame := func(tag string) chromedp.ActionFunc {
 		return func(c context.Context) error {
 			var buf []byte
 			if err := chromedp.CaptureScreenshot(&buf).Do(c); err != nil {
 				return err
 			}
 			frameID++
-			filename := fmt.Sprintf("%s/frame_%03d_%s.jpg", CaptureDir, frameID, stepName)
+			// File name: frame_001_tag.jpg
+			filename := fmt.Sprintf("%s/frame_%03d_%s.jpg", CaptureDir, frameID, tag)
 			return os.WriteFile(filename, buf, 0644)
 		}
 	}
 
 	err := chromedp.Run(ctx,
-		// 1. Navigate
 		chromedp.Navigate(TargetURL),
+		chromedp.Sleep(5*time.Second),
+		saveFrame("1_loaded"),
+
+		// Select Country
+		chromedp.Click(`//div[contains(@class, 'hwid-input-div')]`, chromedp.NodeVisible),
 		chromedp.Sleep(2*time.Second),
-		saveFrame("loaded"),
+		saveFrame("2_dropdown"),
 
-		// 2. Select Country (Pakistan +92)
-		// Check karein k dropdown visible hai
-		chromedp.WaitVisible(`//div[contains(@class, 'hwid-input-div')]`),
-		chromedp.Click(`//div[contains(@class, 'hwid-input-div')]`),
-		chromedp.Sleep(1*time.Second),
-		saveFrame("dropdown_clicked"),
-
-		// Search Pakistan
 		chromedp.SendKeys(`input[type="search"]`, "Pakistan"),
-		chromedp.Sleep(1*time.Second),
-		saveFrame("typed_pakistan"),
+		chromedp.Sleep(2*time.Second),
+		saveFrame("3_search"),
 
-		// Click Result
-		chromedp.Click(`//li[contains(text(), 'Pakistan')]`),
-		chromedp.Sleep(1*time.Second),
-		saveFrame("country_selected"),
+		chromedp.Click(`//li[contains(text(), 'Pakistan')]`, chromedp.NodeVisible),
+		chromedp.Sleep(2*time.Second),
+		saveFrame("4_selected"),
 
-		// 3. Enter Number
-		chromedp.WaitVisible(`input[type="tel"]`),
+		// Input Number
 		chromedp.SendKeys(`input[type="tel"]`, phoneNumber),
 		chromedp.Sleep(1*time.Second),
-		saveFrame("number_entered"),
+		saveFrame("5_number_typed"),
 
-		// 4. Click Get Code
-		chromedp.Click(`//div[contains(text(), 'Get code')]`),
-		saveFrame("clicked_get_code"),
+		// Click Get Code
+		chromedp.Click(`//div[contains(text(), 'Get code')]`, chromedp.NodeVisible),
+		saveFrame("6_clicked_get_code"),
 
-		// 5. Recording Phase (Video Loop)
-		// Agle 30 second tak har second tasveer save karega
+		// Recording Mode (Watch for 30 seconds)
 		chromedp.ActionFunc(func(c context.Context) error {
 			for i := 0; i < 30; i++ {
 				var buf []byte
@@ -164,7 +168,6 @@ func runHuaweiBot(phoneNumber string) {
 				frameID++
 				filename := fmt.Sprintf("%s/frame_%03d_monitor.jpg", CaptureDir, frameID)
 				os.WriteFile(filename, buf, 0644)
-				
 				time.Sleep(1 * time.Second)
 			}
 			return nil
@@ -172,9 +175,8 @@ func runHuaweiBot(phoneNumber string) {
 	)
 
 	if err != nil {
-		log.Printf("Bot Crashed/Stopped: %v", err)
-		// Error ka screenshot bhi lein
-		// (Alag context banana padega agar purana mar gaya, lekin log kafi hai)
+		log.Printf("Bot Error: %v", err)
+	} else {
+		log.Println("Bot Finished Successfully")
 	}
-	log.Println("Bot Finished Successfully")
 }
