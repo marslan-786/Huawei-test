@@ -24,25 +24,24 @@ const (
 )
 
 func main() {
-	// 1. Setup Directories
+	// Setup Folders
+	os.RemoveAll(CaptureDir) // Purana data saf karein start par
 	os.Mkdir(CaptureDir, 0777)
 
-	// 2. Start Bot in Background (FOREVER LOOP)
+	// Start Bot Loop
 	go startInfiniteBot()
 
-	// 3. Setup Web Server
+	// Web Server
 	r := gin.Default()
 	r.LoadHTMLGlob("templates/*")
 	r.Static("/captures", CaptureDir)
 
-	// Dashboard
 	r.GET("/", func(c *gin.Context) {
 		c.HTML(http.StatusOK, "index.html", nil)
 	})
 
-	// Gallery API
 	r.GET("/gallery-data", func(c *gin.Context) {
-		files, _ := filepath.Glob(filepath.Join(CaptureDir, "frame_*.jpg"))
+		files, _ := filepath.Glob(filepath.Join(CaptureDir, "*.jpg"))
 		sort.Strings(files)
 		var images []string
 		for _, f := range files {
@@ -51,129 +50,145 @@ func main() {
 		c.JSON(200, images)
 	})
 
-	// Make Video API (FFmpeg)
 	r.GET("/make-video", func(c *gin.Context) {
 		outputFile := filepath.Join(CaptureDir, "output.mp4")
-		// Delete old video
 		os.Remove(outputFile)
-
-		// Run FFmpeg: Convert jpg sequence to mp4
-		// -framerate 2: matlab 1 second main 2 frames (tez video)
-		cmd := exec.Command("ffmpeg", "-y", "-framerate", "2", "-pattern_type", "glob", "-i", CaptureDir+"/frame_*.jpg", "-c:v", "libx264", "-pix_fmt", "yuv420p", outputFile)
-		
+		// FFmpeg command updated for reliability
+		cmd := exec.Command("bash", "-c", fmt.Sprintf("ffmpeg -y -framerate 1 -pattern_type glob -i '%s/*.jpg' -c:v libx264 -pix_fmt yuv420p %s", CaptureDir, outputFile))
 		output, err := cmd.CombinedOutput()
 		if err != nil {
-			log.Println("FFmpeg Error:", string(output))
-			c.JSON(500, gin.H{"error": "Video generation failed", "details": string(output)})
+			c.JSON(500, gin.H{"error": "Video failed", "details": string(output)})
 			return
 		}
-
 		c.JSON(200, gin.H{"video_url": "/captures/output.mp4"})
 	})
 
-	log.Println("System Online. Bot starting automatically...")
 	r.Run(Port)
 }
 
-// --- The Infinite Loop ---
 func startInfiniteBot() {
+	// Infinite loop lekin ab ye bar bar reload nahi karega jab tak cycle complete na ho
 	for {
-		log.Println(">>> Starting New Cycle...")
-		
-		// Clean old files before new run (Optional: agar purana data clear karna ho)
-		// os.RemoveAll(CaptureDir) 
-		// os.Mkdir(CaptureDir, 0777)
-
+		log.Println(">>> Starting Full Cycle...")
 		runBotSequence()
-		
-		log.Println(">>> Cycle Finished. Restarting in 5 seconds...")
-		time.Sleep(5 * time.Second)
+		log.Println(">>> Cycle Complete. Waiting 30 seconds before restart...")
+		time.Sleep(30 * time.Second) // Cycle k baad lamba wait
 	}
 }
 
-// --- Bot Logic ---
 func runBotSequence() {
-	// Browser Config
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.WindowSize(1280, 800),
-		chromedp.UserAgent("Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"),
+		chromedp.UserAgent("Mozilla/5.0 (Linux; Android 11; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36"),
 	)
 
 	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	defer cancel()
 
-	// Context with Timeout (Taake agar atak jaye to khud band ho jaye)
 	ctx, cancel := chromedp.NewContext(allocCtx)
 	defer cancel()
-	ctx, cancel = context.WithTimeout(ctx, 3*time.Minute)
+	
+	// Timeout barha diya taake beech main band na ho
+	ctx, cancel = context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	frameID := 0
-	timestamp := time.Now().Unix() // Unique batch ID for filenames
-
-	// Helper to capture
-	capture := func(tag string) chromedp.ActionFunc {
+	ts := time.Now().Unix()
+	
+	// --- Capture Helper ---
+	capture := func(name string) chromedp.ActionFunc {
 		return func(c context.Context) error {
 			var buf []byte
-			if err := chromedp.CaptureScreenshot(&buf).Do(c); err != nil {
-				return err
-			}
-			frameID++
-			// File Name: frame_TIMESTAMP_001_tag.jpg (Sorting k liye best)
-			filename := fmt.Sprintf("%s/frame_%d_%03d_%s.jpg", CaptureDir, timestamp, frameID, tag)
+			// Full page screenshot ki bajaye viewport lein (speed k liye)
+			chromedp.CaptureScreenshot(&buf).Do(c)
+			filename := fmt.Sprintf("%s/%d_%s.jpg", CaptureDir, ts, name)
 			return os.WriteFile(filename, buf, 0644)
 		}
 	}
 
-	// Automation Steps
+	// --- Visual Click Helper (Mouse ka nishan lagata hai) ---
+	visualizeAndClick := func(xpath string, stepName string) chromedp.ActionFunc {
+		return func(c context.Context) error {
+			// 1. Pehle JS inject karein jo us element par ungli (👆) aur border banaye
+			js := fmt.Sprintf(`
+				var el = document.evaluate("%s", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+				if(el) {
+					el.style.border = "5px solid red";
+					el.style.backgroundColor = "rgba(255, 255, 0, 0.3)";
+					
+					var pointer = document.createElement("div");
+					pointer.innerHTML = "👆";
+					pointer.style.fontSize = "50px";
+					pointer.style.position = "absolute";
+					pointer.style.zIndex = "99999";
+					var rect = el.getBoundingClientRect();
+					pointer.style.left = (rect.left + window.scrollX + 20) + "px";
+					pointer.style.top = (rect.top + window.scrollY + 20) + "px";
+					document.body.appendChild(pointer);
+				}
+			`, xpath)
+			
+			chromedp.Evaluate(js, nil).Do(c)
+			
+			// 2. Ab Screenshot lein taake humein click hota nazar aye
+			capture(stepName + "_aiming")(c)
+			time.Sleep(1 * time.Second) // Thora wait taake screenshot main aa jaye
+
+			// 3. Ab asal click karein
+			return chromedp.Click(xpath, chromedp.NodeVisible).Do(c)
+		}
+	}
+
+	log.Println("Navigating...")
+	
 	err := chromedp.Run(ctx,
+		// 1. Load Page
 		chromedp.Navigate(TargetURL),
-		capture("1_start"), // Pehla screenshot
-		
-		chromedp.Sleep(5*time.Second),
-		capture("2_loaded"),
+		chromedp.Sleep(5*time.Second), // Load hone ka sakoon se wait
+		capture("01_page_loaded"),
 
-		// Try Click Dropdown (Using generic selector to avoid crash)
-		// Hum 'hwid-input-div' class dhoond rahe hain jo dropdown hai
-		chromedp.WaitVisible(`//div[contains(@class, 'hwid-input-div')]`),
-		chromedp.Click(`//div[contains(@class, 'hwid-input-div')]`),
+		// 2. Click Country Dropdown (With Visual Indicator)
+		visualizeAndClick(`//div[contains(text(), 'Region') or contains(text(), 'Country')]`, "02_click_country"),
 		chromedp.Sleep(2*time.Second),
-		capture("3_dropdown_click"),
+		capture("03_country_list_open"),
 
-		// Type Pakistan
+		// 3. Type Pakistan (Search)
 		chromedp.SendKeys(`input[type="search"]`, "Pakistan"),
 		chromedp.Sleep(2*time.Second),
-		capture("4_typed_pakistan"),
+		capture("04_typed_pakistan"),
 
-		// Click Pakistan List Item
-		chromedp.Click(`//li[contains(text(), 'Pakistan')]`),
+		// 4. Click Pakistan Option (With Visual Indicator)
+		visualizeAndClick(`//li[contains(text(), 'Pakistan')]`, "05_select_pakistan"),
 		chromedp.Sleep(2*time.Second),
-		capture("5_selected_pakistan"),
+		capture("06_pakistan_selected"),
 
-		// Enter Number
+		// 5. Input Number
 		chromedp.SendKeys(`input[type="tel"]`, TargetPhoneNumber),
 		chromedp.Sleep(1*time.Second),
-		capture("6_entered_number"),
+		capture("07_number_entered"),
 
-		// Click Get Code
-		chromedp.Click(`//div[contains(text(), 'Get code')]`),
-		capture("7_clicked_get_code"),
-
-		// Monitoring Loop (30 Seconds)
+		// 6. Click Get Code (With Visual Indicator)
+		visualizeAndClick(`//div[contains(text(), 'Get code')]`, "08_click_get_code"),
+		
+		// 7. Monitoring Phase (Ab ye page refresh nahi karega, bas dekhta rahega)
 		chromedp.ActionFunc(func(c context.Context) error {
-			for i := 0; i < 15; i++ { // 15 screenshots lenge
-				capture(fmt.Sprintf("monitor_%d", i))(c)
-				time.Sleep(1 * time.Second)
+			log.Println("Monitoring Screen for results...")
+			for i := 1; i <= 20; i++ { // 20 screenshots lay ga (approx 40 seconds)
+				capture(fmt.Sprintf("09_monitor_%02d", i))(c)
+				time.Sleep(2 * time.Second)
 			}
 			return nil
 		}),
 	)
 
 	if err != nil {
-		log.Printf("Bot Error (Screenshot taken): %v", err)
+		log.Printf("Bot Error: %v", err)
+		// Error ka screenshot
+		var buf []byte
+		chromedp.CaptureScreenshot(&buf).Do(ctx)
+		os.WriteFile(fmt.Sprintf("%s/%d_99_ERROR_SCREEN.jpg", CaptureDir, ts), buf, 0644)
 	}
 }
