@@ -1,10 +1,11 @@
 # --------------------------------------------------------
 # Stage 1: Builder (Download Latest & Compile)
 # --------------------------------------------------------
-FROM golang:1.23-bookworm AS builder
+# FIX: Hum ne specific version k bajaye 'bookworm' use kiya hai
+# taake ye hamesha LATEST Go version (e.g 1.25+) uthaye.
+FROM golang:bookworm AS builder
 
 # 1. System Dependencies (OpenCV & Build Tools)
-# Yeh wo libraries hain jo GoCV aur Image Processing k liye zaroori hain
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
@@ -18,23 +19,22 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# 2. Copy Source Code ONLY (No go.mod needed locally)
+# 2. Copy Source Code ONLY
 COPY main.go .
 COPY templates ./templates
 
-# 3. Dynamic Dependency Management (Jadu yahan hai)
-# Pehle purani mod files (agar ghalti se agayi hon) delete karein, phir naya init karein
+# 3. Dynamic Dependency Management
 RUN rm -f go.mod go.sum
 RUN go mod init huawei-bot
 
 # 4. Install HEAVY Libraries (LATEST Versions)
-# Docker ab khud internet se latest version uthaye ga
+# Ab ye error nahi dega kyun k Base Image latest hai
 RUN go get -u github.com/chromedp/chromedp@latest
 RUN go get -u github.com/chromedp/cdproto@latest
 RUN go get -u github.com/gin-gonic/gin@latest
 RUN go get -u gocv.io/x/gocv@latest
 
-# Tidy up to ensure everything matches
+# Tidy up
 RUN go mod tidy
 
 # 5. Build the App (CGO Enabled for OpenCV)
@@ -46,7 +46,6 @@ RUN CGO_ENABLED=1 GOOS=linux go build -a -o huawei-bot main.go
 FROM debian:bookworm-slim
 
 # 1. Runtime Dependencies (Browser + Graphics + OpenCV Runtime)
-# Railway server par Chrome aur OpenCV chalane k liye zaroori cheezein
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     chromium \
