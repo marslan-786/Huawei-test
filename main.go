@@ -6,9 +6,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/chromedp/chromedp"
@@ -17,42 +17,33 @@ import (
 
 // --- Configuration ---
 const (
-	TargetPhoneNumber = "3177635849" // Apna number yahan likhein
+	TargetPhoneNumber = "3177635849"
 	TargetURL         = "https://id5.cloud.huawei.com/CAS/mobile/standard/register/wapRegister.html?reqClientType=7&loginChannel=7000000&regionCode=hk&loginUrl=https%3A%2F%2Fid5.cloud.huawei.com%2FCAS%2Fmobile%2Fstandard%2FwapLogin.html&lang=en-us&themeName=huawei#/wapRegister/regByPhone"
 	Port              = ":8080"
 	CaptureDir        = "./captures"
 )
 
-// --- Global State ---
-var (
-	// FIX: Variable declaration ab theek hai
-	isRunning bool       // Bot chal raha hai ya nahi
-	mu        sync.Mutex // Safety lock
-)
-
 func main() {
-	// 1. Capture Directory banayein
-	if _, err := os.Stat(CaptureDir); os.IsNotExist(err) {
-		os.Mkdir(CaptureDir, 0777)
-	}
+	// 1. Setup Directories
+	os.Mkdir(CaptureDir, 0777)
 
-	// 2. Setup Web Server
+	// 2. Start Bot in Background (FOREVER LOOP)
+	go startInfiniteBot()
+
+	// 3. Setup Web Server
 	r := gin.Default()
 	r.LoadHTMLGlob("templates/*")
-	
-	// Saved images ko browser par dikhane k liye allow karein
-	r.Static("/captures", "./captures")
+	r.Static("/captures", CaptureDir)
 
-	// Home Page
+	// Dashboard
 	r.GET("/", func(c *gin.Context) {
 		c.HTML(http.StatusOK, "index.html", nil)
 	})
 
-	// Gallery API (Images ki list dega)
-	r.GET("/gallery", func(c *gin.Context) {
-		files, _ := filepath.Glob(filepath.Join(CaptureDir, "*.jpg"))
-		sort.Strings(files) // Puraani se nayi tartib
-		
+	// Gallery API
+	r.GET("/gallery-data", func(c *gin.Context) {
+		files, _ := filepath.Glob(filepath.Join(CaptureDir, "frame_*.jpg"))
+		sort.Strings(files)
 		var images []string
 		for _, f := range files {
 			images = append(images, "/captures/"+filepath.Base(f))
@@ -60,45 +51,49 @@ func main() {
 		c.JSON(200, images)
 	})
 
-	// Start Bot API
-	r.POST("/start-bot", func(c *gin.Context) {
-		mu.Lock()
-		if isRunning {
-			mu.Unlock()
-			c.JSON(400, gin.H{"status": "Busy", "message": "Bot already running!"})
+	// Make Video API (FFmpeg)
+	r.GET("/make-video", func(c *gin.Context) {
+		outputFile := filepath.Join(CaptureDir, "output.mp4")
+		// Delete old video
+		os.Remove(outputFile)
+
+		// Run FFmpeg: Convert jpg sequence to mp4
+		// -framerate 2: matlab 1 second main 2 frames (tez video)
+		cmd := exec.Command("ffmpeg", "-y", "-framerate", "2", "-pattern_type", "glob", "-i", CaptureDir+"/frame_*.jpg", "-c:v", "libx264", "-pix_fmt", "yuv420p", outputFile)
+		
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Println("FFmpeg Error:", string(output))
+			c.JSON(500, gin.H{"error": "Video generation failed", "details": string(output)})
 			return
 		}
-		isRunning = true
-		mu.Unlock()
 
-		// Purani pics delete karein
-		oldFiles, _ := filepath.Glob(filepath.Join(CaptureDir, "*.jpg"))
-		for _, f := range oldFiles {
-			os.Remove(f)
-		}
-
-		// Bot ko background main chalayein
-		go func() {
-			defer func() {
-				mu.Lock()
-				isRunning = false
-				mu.Unlock()
-			}()
-			runHuaweiBot(TargetPhoneNumber)
-		}()
-
-		c.JSON(200, gin.H{"status": "Started", "number": TargetPhoneNumber})
+		c.JSON(200, gin.H{"video_url": "/captures/output.mp4"})
 	})
 
-	log.Println("Server running on port", Port)
+	log.Println("System Online. Bot starting automatically...")
 	r.Run(Port)
 }
 
-// --- Bot Logic ---
-func runHuaweiBot(phoneNumber string) {
-	log.Println("Starting Bot Logic for:", phoneNumber)
+// --- The Infinite Loop ---
+func startInfiniteBot() {
+	for {
+		log.Println(">>> Starting New Cycle...")
+		
+		// Clean old files before new run (Optional: agar purana data clear karna ho)
+		// os.RemoveAll(CaptureDir) 
+		// os.Mkdir(CaptureDir, 0777)
 
-	// Browser Setup
+		runBotSequence()
+		
+		log.Println(">>> Cycle Finished. Restarting in 5 seconds...")
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// --- Bot Logic ---
+func runBotSequence() {
+	// Browser Config
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
 		chromedp.Flag("disable-gpu", true),
@@ -111,63 +106,67 @@ func runHuaweiBot(phoneNumber string) {
 	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	defer cancel()
 
+	// Context with Timeout (Taake agar atak jaye to khud band ho jaye)
 	ctx, cancel := chromedp.NewContext(allocCtx)
 	defer cancel()
-
 	ctx, cancel = context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
 	frameID := 0
-	
-	// Helper: Save Image to Disk
-	saveFrame := func(tag string) chromedp.ActionFunc {
+	timestamp := time.Now().Unix() // Unique batch ID for filenames
+
+	// Helper to capture
+	capture := func(tag string) chromedp.ActionFunc {
 		return func(c context.Context) error {
 			var buf []byte
 			if err := chromedp.CaptureScreenshot(&buf).Do(c); err != nil {
 				return err
 			}
 			frameID++
-			// File name: frame_001_tag.jpg
-			filename := fmt.Sprintf("%s/frame_%03d_%s.jpg", CaptureDir, frameID, tag)
+			// File Name: frame_TIMESTAMP_001_tag.jpg (Sorting k liye best)
+			filename := fmt.Sprintf("%s/frame_%d_%03d_%s.jpg", CaptureDir, timestamp, frameID, tag)
 			return os.WriteFile(filename, buf, 0644)
 		}
 	}
 
+	// Automation Steps
 	err := chromedp.Run(ctx,
 		chromedp.Navigate(TargetURL),
+		capture("1_start"), // Pehla screenshot
+		
 		chromedp.Sleep(5*time.Second),
-		saveFrame("1_loaded"),
+		capture("2_loaded"),
 
-		// Select Country
-		chromedp.Click(`//div[contains(@class, 'hwid-input-div')]`, chromedp.NodeVisible),
+		// Try Click Dropdown (Using generic selector to avoid crash)
+		// Hum 'hwid-input-div' class dhoond rahe hain jo dropdown hai
+		chromedp.WaitVisible(`//div[contains(@class, 'hwid-input-div')]`),
+		chromedp.Click(`//div[contains(@class, 'hwid-input-div')]`),
 		chromedp.Sleep(2*time.Second),
-		saveFrame("2_dropdown"),
+		capture("3_dropdown_click"),
 
+		// Type Pakistan
 		chromedp.SendKeys(`input[type="search"]`, "Pakistan"),
 		chromedp.Sleep(2*time.Second),
-		saveFrame("3_search"),
+		capture("4_typed_pakistan"),
 
-		chromedp.Click(`//li[contains(text(), 'Pakistan')]`, chromedp.NodeVisible),
+		// Click Pakistan List Item
+		chromedp.Click(`//li[contains(text(), 'Pakistan')]`),
 		chromedp.Sleep(2*time.Second),
-		saveFrame("4_selected"),
+		capture("5_selected_pakistan"),
 
-		// Input Number
-		chromedp.SendKeys(`input[type="tel"]`, phoneNumber),
+		// Enter Number
+		chromedp.SendKeys(`input[type="tel"]`, TargetPhoneNumber),
 		chromedp.Sleep(1*time.Second),
-		saveFrame("5_number_typed"),
+		capture("6_entered_number"),
 
 		// Click Get Code
-		chromedp.Click(`//div[contains(text(), 'Get code')]`, chromedp.NodeVisible),
-		saveFrame("6_clicked_get_code"),
+		chromedp.Click(`//div[contains(text(), 'Get code')]`),
+		capture("7_clicked_get_code"),
 
-		// Recording Mode (Watch for 30 seconds)
+		// Monitoring Loop (30 Seconds)
 		chromedp.ActionFunc(func(c context.Context) error {
-			for i := 0; i < 30; i++ {
-				var buf []byte
-				chromedp.CaptureScreenshot(&buf).Do(c)
-				frameID++
-				filename := fmt.Sprintf("%s/frame_%03d_monitor.jpg", CaptureDir, frameID)
-				os.WriteFile(filename, buf, 0644)
+			for i := 0; i < 15; i++ { // 15 screenshots lenge
+				capture(fmt.Sprintf("monitor_%d", i))(c)
 				time.Sleep(1 * time.Second)
 			}
 			return nil
@@ -175,8 +174,6 @@ func runHuaweiBot(phoneNumber string) {
 	)
 
 	if err != nil {
-		log.Printf("Bot Error: %v", err)
-	} else {
-		log.Println("Bot Finished Successfully")
+		log.Printf("Bot Error (Screenshot taken): %v", err)
 	}
 }
