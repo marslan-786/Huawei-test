@@ -3,126 +3,102 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Huawei Bot Recorder</title>
+    <title>Huawei Bot Auto-Pilot</title>
     <style>
-        body {
-            background-color: #1a1a1a;
-            color: #fff;
-            font-family: 'Segoe UI', sans-serif;
-            text-align: center;
-            padding: 20px;
-        }
+        body { background: #111; color: #eee; font-family: monospace; text-align: center; padding: 20px; }
+        h1 { color: #ff3b30; }
+        .btn-group { margin: 20px 0; }
         button {
-            background: #e60000;
-            color: white;
-            border: none;
-            padding: 15px 30px;
-            font-size: 18px;
+            padding: 15px 25px; font-size: 16px; border: none; cursor: pointer; border-radius: 5px; margin: 5px;
             font-weight: bold;
-            border-radius: 8px;
-            cursor: pointer;
-            box-shadow: 0 4px 10px rgba(230,0,0,0.3);
         }
-        button:disabled { background: #555; cursor: not-allowed; }
+        .btn-check { background: #007aff; color: white; }
+        .btn-video { background: #34c759; color: white; }
         
-        #viewer {
-            margin-top: 20px;
-            border: 4px solid #333;
-            background: #000;
-            display: inline-block;
-            min-width: 600px;
-            min-height: 400px;
-            position: relative;
-        }
-        #current-img {
-            max-width: 100%;
-            height: auto;
-            display: block;
-        }
-        .status-bar {
-            margin-top: 10px;
-            font-family: monospace;
-            color: #0f0;
-        }
-        .gallery {
-            margin-top: 20px;
-            display: flex;
-            gap: 5px;
-            overflow-x: auto;
+        #status { color: yellow; margin-bottom: 20px; }
+        
+        .gallery-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 10px;
             padding: 10px;
             background: #222;
+            border-radius: 10px;
+            max-height: 500px;
+            overflow-y: auto;
         }
-        .gallery img {
-            height: 60px;
-            border: 1px solid #555;
-            cursor: pointer;
+        .gallery-container img {
+            width: 100%; border: 1px solid #444; border-radius: 5px;
         }
-        .gallery img:hover { border-color: #fff; }
+        
+        #video-player {
+            margin-top: 20px;
+            display: none;
+            width: 80%;
+            border: 2px solid #34c759;
+        }
     </style>
 </head>
 <body>
 
-    <h1>Huawei Bot Recorder</h1>
-    
-    <button id="startBtn" onclick="startBot()">🔴 START RECORDING</button>
-    <div class="status-bar" id="status">Waiting to start...</div>
+    <h1>Huawei Bot: AUTO PILOT</h1>
+    <div id="status">Status: System Running Automatically...</div>
 
-    <div id="viewer">
-        <img id="current-img" src="" alt="No Signal">
+    <div class="btn-group">
+        <button class="btn-check" onclick="loadGallery()">📸 Check Pictures</button>
+        <button class="btn-video" onclick="makeVideo()">🎬 Convert to Video</button>
     </div>
 
-    <div class="gallery" id="filmstrip"></div>
+    <video id="video-player" controls>
+        <source id="video-source" src="" type="video/mp4">
+        Your browser does not support the video tag.
+    </video>
+
+    <div class="gallery-container" id="gallery">
+        </div>
 
     <script>
-        let intervalId;
+        // Auto Load Gallery on page open
+        window.onload = loadGallery;
 
-        function startBot() {
-            document.getElementById('startBtn').disabled = true;
-            document.getElementById('status').innerText = "Bot Initializing...";
-            
-            // Clear old images
-            document.getElementById('current-img').src = "";
-            document.getElementById('filmstrip').innerHTML = "";
-
-            fetch('/start-bot', { method: 'POST' })
+        function loadGallery() {
+            document.getElementById('status').innerText = "Fetching latest captures...";
+            fetch('/gallery-data')
             .then(res => res.json())
-            .then(data => {
-                document.getElementById('status').innerText = "Running: " + data.number;
-                // Start polling for images
-                intervalId = setInterval(fetchGallery, 1000); // Har 1 second baad check kare
-            })
-            .catch(err => {
-                document.getElementById('status').innerText = "Error: " + err;
-                document.getElementById('startBtn').disabled = false;
+            .then(images => {
+                const container = document.getElementById('gallery');
+                container.innerHTML = ""; // Clear old
+                images.reverse().forEach(src => { // Show newest first
+                    const img = document.createElement('img');
+                    img.src = src + "?t=" + new Date().getTime(); // Cache bust
+                    container.appendChild(img);
+                });
+                document.getElementById('status').innerText = "Gallery Updated: " + images.length + " Frames";
             });
         }
 
-        function fetchGallery() {
-            fetch('/gallery')
+        function makeVideo() {
+            document.getElementById('status').innerText = "Generating Video (Please wait)...";
+            fetch('/make-video')
             .then(res => res.json())
-            .then(images => {
-                if (images.length > 0) {
-                    const latest = images[images.length - 1];
-                    const viewer = document.getElementById('current-img');
+            .then(data => {
+                if (data.error) {
+                    alert("Error: " + data.details);
+                } else {
+                    document.getElementById('status').innerText = "Video Ready!";
+                    const player = document.getElementById('video-player');
+                    const source = document.getElementById('video-source');
                     
-                    // Update main viewer only if new image arrived
-                    if (!viewer.src.includes(latest)) {
-                        viewer.src = latest + "?t=" + new Date().getTime(); // Cache bust
-                        document.getElementById('status').innerText = "Viewing Frame: " + images.length;
-                    }
-
-                    // Update Filmstrip
-                    const strip = document.getElementById('filmstrip');
-                    strip.innerHTML = "";
-                    images.forEach(img => {
-                        let thumb = document.createElement('img');
-                        thumb.src = img;
-                        thumb.onclick = () => { document.getElementById('current-img').src = img; };
-                        strip.appendChild(thumb);
-                    });
+                    source.src = data.video_url + "?t=" + new Date().getTime();
+                    player.style.display = "block";
+                    player.load();
+                    player.play();
                 }
             });
         }
+        
+        // Auto refresh gallery every 5 seconds
+        setInterval(loadGallery, 5000);
     </script>
 </body>
 </html>
