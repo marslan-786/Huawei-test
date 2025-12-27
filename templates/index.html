@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Huawei Bot View</title>
+    <style>
+        body {
+            background-color: #000;
+            color: #fff;
+            font-family: sans-serif;
+            text-align: center;
+            margin: 0; padding: 20px;
+        }
+        button {
+            background: #e60000; /* Huawei Red */
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 20px;
+            border-radius: 50px;
+            cursor: pointer;
+            margin-bottom: 20px;
+            font-weight: bold;
+        }
+        button:hover { background: #ff3333; }
+        .screen-container {
+            border: 2px solid #333;
+            display: inline-block;
+            line-height: 0;
+        }
+        img { max-width: 100%; height: auto; }
+    </style>
+</head>
+<body>
+
+    <h1>Huawei OTP Monitor</h1>
+    
+    <button onclick="startBot()">START TEST</button>
+    <div id="status">Ready</div>
+
+    <br>
+
+    <div class="screen-container">
+        <img id="live-feed" src="/stream" width="800">
+    </div>
+
+    <script>
+        function startBot() {
+            document.getElementById('status').innerText = "Running script...";
+            fetch('/start-bot', { method: 'POST' })
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('status').innerText = "Testing Number: " + data.number;
+            });
+        }
+    </script>
+
+</body>
+</html>
