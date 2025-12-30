@@ -11,6 +11,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/chromedp"
 	"github.com/gin-gonic/gin"
 )
@@ -24,14 +25,9 @@ const (
 )
 
 func main() {
-	// Setup Folders
-	os.RemoveAll(CaptureDir) // Purana data saf karein start par
 	os.Mkdir(CaptureDir, 0777)
-
-	// Start Bot Loop
 	go startInfiniteBot()
 
-	// Web Server
 	r := gin.Default()
 	r.LoadHTMLGlob("templates/*")
 	r.Static("/captures", CaptureDir)
@@ -50,13 +46,18 @@ func main() {
 		c.JSON(200, images)
 	})
 
+	// FIXED VIDEO COMMAND (Using mpeg4 instead of x264)
 	r.GET("/make-video", func(c *gin.Context) {
 		outputFile := filepath.Join(CaptureDir, "output.mp4")
 		os.Remove(outputFile)
-		// FFmpeg command updated for reliability
-		cmd := exec.Command("bash", "-c", fmt.Sprintf("ffmpeg -y -framerate 1 -pattern_type glob -i '%s/*.jpg' -c:v libx264 -pix_fmt yuv420p %s", CaptureDir, outputFile))
+
+		// Command changed to use 'mpeg4' codec which is always available
+		cmdStr := fmt.Sprintf("ffmpeg -y -framerate 1 -pattern_type glob -i '%s/*.jpg' -c:v mpeg4 -q:v 5 %s", CaptureDir, outputFile)
+		cmd := exec.Command("bash", "-c", cmdStr)
+		
 		output, err := cmd.CombinedOutput()
 		if err != nil {
+			log.Println("FFmpeg Error:", string(output))
 			c.JSON(500, gin.H{"error": "Video failed", "details": string(output)})
 			return
 		}
@@ -67,12 +68,18 @@ func main() {
 }
 
 func startInfiniteBot() {
-	// Infinite loop lekin ab ye bar bar reload nahi karega jab tak cycle complete na ho
 	for {
-		log.Println(">>> Starting Full Cycle...")
+		// Clean old files every cycle to save space
+		files, _ := filepath.Glob(filepath.Join(CaptureDir, "*.jpg"))
+		if len(files) > 100 { // Keep manageable
+			os.RemoveAll(CaptureDir)
+			os.Mkdir(CaptureDir, 0777)
+		}
+
+		log.Println(">>> Starting New Cycle...")
 		runBotSequence()
-		log.Println(">>> Cycle Complete. Waiting 30 seconds before restart...")
-		time.Sleep(30 * time.Second) // Cycle k baad lamba wait
+		log.Println(">>> Cycle Finished. Restarting in 10 seconds...")
+		time.Sleep(10 * time.Second)
 	}
 }
 
@@ -82,8 +89,8 @@ func runBotSequence() {
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.WindowSize(1280, 800),
-		chromedp.UserAgent("Mozilla/5.0 (Linux; Android 11; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36"),
+		chromedp.WindowSize(1080, 1920), // Mobile Resolution
+		chromedp.UserAgent("Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"),
 	)
 
 	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
@@ -91,93 +98,109 @@ func runBotSequence() {
 
 	ctx, cancel := chromedp.NewContext(allocCtx)
 	defer cancel()
-	
-	// Timeout barha diya taake beech main band na ho
-	ctx, cancel = context.WithTimeout(ctx, 5*time.Minute)
+	ctx, cancel = context.WithTimeout(ctx, 4*time.Minute)
 	defer cancel()
 
 	ts := time.Now().Unix()
 	
-	// --- Capture Helper ---
 	capture := func(name string) chromedp.ActionFunc {
 		return func(c context.Context) error {
 			var buf []byte
-			// Full page screenshot ki bajaye viewport lein (speed k liye)
 			chromedp.CaptureScreenshot(&buf).Do(c)
 			filename := fmt.Sprintf("%s/%d_%s.jpg", CaptureDir, ts, name)
 			return os.WriteFile(filename, buf, 0644)
 		}
 	}
 
-	// --- Visual Click Helper (Mouse ka nishan lagata hai) ---
-	visualizeAndClick := func(xpath string, stepName string) chromedp.ActionFunc {
+	// --- Enhanced Visual Click ---
+	smartClick := func(xpath string, stepName string) chromedp.ActionFunc {
 		return func(c context.Context) error {
-			// 1. Pehle JS inject karein jo us element par ungli (👆) aur border banaye
+			// 1. Draw Red Dot
 			js := fmt.Sprintf(`
 				var el = document.evaluate("%s", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
 				if(el) {
-					el.style.border = "5px solid red";
-					el.style.backgroundColor = "rgba(255, 255, 0, 0.3)";
-					
-					var pointer = document.createElement("div");
-					pointer.innerHTML = "👆";
-					pointer.style.fontSize = "50px";
-					pointer.style.position = "absolute";
-					pointer.style.zIndex = "99999";
+					var dot = document.createElement("div");
+					dot.style.width = "20px";
+					dot.style.height = "20px";
+					dot.style.background = "red";
+					dot.style.borderRadius = "50%%";
+					dot.style.position = "absolute";
+					dot.style.zIndex = "10000";
+					dot.style.border = "2px solid white";
 					var rect = el.getBoundingClientRect();
-					pointer.style.left = (rect.left + window.scrollX + 20) + "px";
-					pointer.style.top = (rect.top + window.scrollY + 20) + "px";
-					document.body.appendChild(pointer);
+					dot.style.left = (rect.left + (rect.width/2)) + "px";
+					dot.style.top = (rect.top + (rect.height/2)) + "px";
+					document.body.appendChild(dot);
 				}
 			`, xpath)
-			
 			chromedp.Evaluate(js, nil).Do(c)
 			
-			// 2. Ab Screenshot lein taake humein click hota nazar aye
 			capture(stepName + "_aiming")(c)
-			time.Sleep(1 * time.Second) // Thora wait taake screenshot main aa jaye
+			time.Sleep(500 * time.Millisecond)
 
-			// 3. Ab asal click karein
-			return chromedp.Click(xpath, chromedp.NodeVisible).Do(c)
+			// 2. Try Standard Click
+			err := chromedp.Click(xpath, chromedp.NodeVisible).Do(c)
+			if err != nil {
+				log.Printf("Standard click failed for %s, trying JS Click...", stepName)
+				// 3. Fallback: JavaScript Click (Works even if overlapped)
+				jsClick := fmt.Sprintf(`
+					var el = document.evaluate("%s", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+					if(el) el.click();
+				`, xpath)
+				return chromedp.Evaluate(jsClick, nil).Do(c)
+			}
+			return nil
 		}
 	}
 
 	log.Println("Navigating...")
 	
 	err := chromedp.Run(ctx,
-		// 1. Load Page
 		chromedp.Navigate(TargetURL),
-		chromedp.Sleep(5*time.Second), // Load hone ka sakoon se wait
-		capture("01_page_loaded"),
+		chromedp.Sleep(8*time.Second), // Load k liye lamba wait
+		capture("01_loaded"),
 
-		// 2. Click Country Dropdown (With Visual Indicator)
-		visualizeAndClick(`//div[contains(text(), 'Region') or contains(text(), 'Country')]`, "02_click_country"),
-		chromedp.Sleep(2*time.Second),
-		capture("03_country_list_open"),
+		// STEP 0: Close Cookie Banner (Agar aya ho to)
+		chromedp.ActionFunc(func(c context.Context) error {
+			// Try finding generic "Accept" or "X" buttons
+			chromedp.Click(`//span[contains(text(), 'Accept')]`, chromedp.NodeVisible).Do(c)
+			return nil
+		}),
 
-		// 3. Type Pakistan (Search)
+		// STEP 1: Click "Country/Region" (Using Text Match)
+		// Ye sab se safe selector hai
+		smartClick(`//*[contains(text(), "Region")]`, "02_click_region"),
+		chromedp.Sleep(3*time.Second),
+		capture("03_region_list"),
+
+		// STEP 2: Type Pakistan
 		chromedp.SendKeys(`input[type="search"]`, "Pakistan"),
 		chromedp.Sleep(2*time.Second),
-		capture("04_typed_pakistan"),
+		capture("04_typed_pak"),
 
-		// 4. Click Pakistan Option (With Visual Indicator)
-		visualizeAndClick(`//li[contains(text(), 'Pakistan')]`, "05_select_pakistan"),
+		// STEP 3: Click "Pakistan +92"
+		smartClick(`//div[contains(text(), "Pakistan")]`, "05_select_pak"),
 		chromedp.Sleep(2*time.Second),
-		capture("06_pakistan_selected"),
+		capture("06_pak_selected"),
 
-		// 5. Input Number
-		chromedp.SendKeys(`input[type="tel"]`, TargetPhoneNumber),
+		// STEP 4: Input Number (Focus + Type)
+		// Kabhi kabhi input field par click karna parta hai pehle
+		smartClick(`//input[@type="tel"]`, "07_focus_input"),
+		chromedp.SendKeys(`//input[@type="tel"]`, TargetPhoneNumber),
 		chromedp.Sleep(1*time.Second),
-		capture("07_number_entered"),
+		capture("08_number_entered"),
 
-		// 6. Click Get Code (With Visual Indicator)
-		visualizeAndClick(`//div[contains(text(), 'Get code')]`, "08_click_get_code"),
+		// STEP 5: Click Get Code
+		smartClick(`//*[contains(text(), "Get code")]`, "09_click_getcode"),
 		
-		// 7. Monitoring Phase (Ab ye page refresh nahi karega, bas dekhta rahega)
+		// STEP 6: Watch Loop (No refresh)
 		chromedp.ActionFunc(func(c context.Context) error {
-			log.Println("Monitoring Screen for results...")
-			for i := 1; i <= 20; i++ { // 20 screenshots lay ga (approx 40 seconds)
-				capture(fmt.Sprintf("09_monitor_%02d", i))(c)
+			for i := 1; i <= 15; i++ {
+				capture(fmt.Sprintf("10_waiting_%02d", i))(c)
+				
+				// Agar Slider aye to usay handle karne ki logic yahan ayegi baad main
+				// Filhal hum sirf dekh rahe hain
+				
 				time.Sleep(2 * time.Second)
 			}
 			return nil
@@ -186,9 +209,23 @@ func runBotSequence() {
 
 	if err != nil {
 		log.Printf("Bot Error: %v", err)
-		// Error ka screenshot
-		var buf []byte
-		chromedp.CaptureScreenshot(&buf).Do(ctx)
-		os.WriteFile(fmt.Sprintf("%s/%d_99_ERROR_SCREEN.jpg", CaptureDir, ts), buf, 0644)
+		// Touch Simulation (Last Resort - Center Click)
+		// Agar sab fail ho jaye to screen k beech main click karega (Debugging)
+		chromedp.Run(ctx, 
+			chromedp.ActionFunc(func(c context.Context) error {
+				p := &input.DispatchMouseEventParams{
+					Type: input.MousePressed,
+					X:    500,
+					Y:    800,
+					Button: input.MouseButtonLeft,
+					ClickCount: 1,
+				}
+				p.Do(c)
+				p.Type = input.MouseReleased
+				p.Do(c)
+				return nil
+			}),
+			capture("99_panic_click"),
+		)
 	}
 }
