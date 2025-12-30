@@ -209,15 +209,15 @@ func runBotSequence() {
 
 	if err != nil {
 		log.Printf("Bot Error: %v", err)
-		// Panic Click (FIXED VARIABLE NAME HERE)
+		// Panic Click (FIXED: Reverted to MouseButtonLeft)
 		chromedp.Run(ctx, 
 			chromedp.ActionFunc(func(c context.Context) error {
 				p := &input.DispatchMouseEventParams{
 					Type: input.MousePressed,
 					X:    500,
 					Y:    800,
-					// FIX: MouseButtonLeft was deprecated, used ButtonLeft
-					Button: input.ButtonLeft, 
+					// FIX: Yahan MouseButtonLeft hi sahi hai
+					Button: input.MouseButtonLeft, 
 					ClickCount: 1,
 				}
 				p.Do(c)
