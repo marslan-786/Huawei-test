@@ -3,102 +3,129 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Huawei Bot Auto-Pilot</title>
+    <title>Huawei Bot Control</title>
     <style>
-        body { background: #111; color: #eee; font-family: monospace; text-align: center; padding: 20px; }
-        h1 { color: #ff3b30; }
-        .btn-group { margin: 20px 0; }
+        body { background: #121212; color: #fff; font-family: sans-serif; text-align: center; margin: 0; padding: 20px; }
+        
+        .main-menu { margin-top: 50px; }
+        
         button {
-            padding: 15px 25px; font-size: 16px; border: none; cursor: pointer; border-radius: 5px; margin: 5px;
+            padding: 20px 40px;
+            font-size: 20px;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            margin: 10px;
+            width: 80%;
+            max-width: 400px;
             font-weight: bold;
+            text-transform: uppercase;
         }
-        .btn-check { background: #007aff; color: white; }
-        .btn-video { background: #34c759; color: white; }
         
-        #status { color: yellow; margin-bottom: 20px; }
-        
-        .gallery-container {
+        .btn-check { background: #0A84FF; color: white; }
+        .btn-video { background: #30D158; color: white; }
+        .btn-refresh { background: #FF9F0A; color: black; width: auto; padding: 10px 20px; font-size: 14px; }
+        .btn-back { background: #333; color: white; width: auto; padding: 10px 20px; font-size: 14px; }
+
+        #gallery-view { display: none; text-align: left; }
+        .gallery-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-            gap: 10px;
+            gap: 5px;
             padding: 10px;
-            background: #222;
-            border-radius: 10px;
-            max-height: 500px;
-            overflow-y: auto;
         }
-        .gallery-container img {
-            width: 100%; border: 1px solid #444; border-radius: 5px;
-        }
+        .gallery-grid img { width: 100%; border: 1px solid #333; }
         
-        #video-player {
-            margin-top: 20px;
-            display: none;
-            width: 80%;
-            border: 2px solid #34c759;
-        }
+        #video-container { display: none; margin-top: 20px; }
+        video { width: 90%; max-width: 600px; border: 2px solid #30D158; }
+        
+        #loading { color: yellow; display: none; }
     </style>
 </head>
 <body>
 
-    <h1>Huawei Bot: AUTO PILOT</h1>
-    <div id="status">Status: System Running Automatically...</div>
-
-    <div class="btn-group">
-        <button class="btn-check" onclick="loadGallery()">📸 Check Pictures</button>
-        <button class="btn-video" onclick="makeVideo()">🎬 Convert to Video</button>
+    <div id="main-menu" class="main-menu">
+        <h1>🤖 Huawei Auto-Bot</h1>
+        <p>System is running in background...</p>
+        
+        <button class="btn-check" onclick="showGallery()">📸 Check Pictures</button>
+        <br>
+        <button class="btn-video" onclick="generateVideo()">🎬 Convert to Video</button>
+        
+        <div id="loading">Processing... Please Wait...</div>
+        
+        <div id="video-container">
+            <h3>Latest Session Video</h3>
+            <video id="video-player" controls>
+                <source id="video-source" src="" type="video/mp4">
+            </video>
+        </div>
     </div>
 
-    <video id="video-player" controls loop style="display:none; width:80%; margin:20px auto; border: 2px solid #0f0;">
-        <source id="video-source" src="" type="video/mp4">
-        Your browser does not support the video tag.
-    </video>
-
-    <div class="gallery-container" id="gallery">
+    <div id="gallery-view">
+        <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px;">
+            <button class="btn-back" onclick="showMenu()">⬅ Back</button>
+            <h2 style="margin:0;">Captured Frames</h2>
+            <button class="btn-refresh" onclick="loadImages()">🔄 Refresh</button>
         </div>
+        <div class="gallery-grid" id="grid"></div>
+    </div>
 
     <script>
-        // Auto Load Gallery on page open
-        window.onload = loadGallery;
+        function showMenu() {
+            document.getElementById('main-menu').style.display = 'block';
+            document.getElementById('gallery-view').style.display = 'none';
+        }
 
-        function loadGallery() {
-            document.getElementById('status').innerText = "Fetching latest captures...";
+        function showGallery() {
+            document.getElementById('main-menu').style.display = 'none';
+            document.getElementById('gallery-view').style.display = 'block';
+            loadImages();
+        }
+
+        function loadImages() {
+            const grid = document.getElementById('grid');
+            // grid.innerHTML = "<p style='color:yellow; text-align:center;'>Loading...</p>";
+            
             fetch('/gallery-data')
             .then(res => res.json())
             .then(images => {
-                const container = document.getElementById('gallery');
-                container.innerHTML = ""; // Clear old
-                images.reverse().forEach(src => { // Show newest first
+                grid.innerHTML = ""; // Clear
+                // Show newest first (Reverse)
+                images.reverse().forEach(src => {
                     const img = document.createElement('img');
-                    img.src = src + "?t=" + new Date().getTime(); // Cache bust
-                    container.appendChild(img);
+                    img.src = src + "?t=" + new Date().getTime();
+                    grid.appendChild(img);
                 });
-                document.getElementById('status').innerText = "Gallery Updated: " + images.length + " Frames";
+                if(images.length === 0) grid.innerHTML = "<p>No images yet...</p>";
             });
         }
 
-        function makeVideo() {
-            document.getElementById('status').innerText = "Generating Video (Please wait)...";
+        function generateVideo() {
+            document.getElementById('loading').style.display = 'block';
+            
             fetch('/make-video')
             .then(res => res.json())
             .then(data => {
-                if (data.error) {
+                document.getElementById('loading').style.display = 'none';
+                if(data.error) {
                     alert("Error: " + data.details);
                 } else {
-                    document.getElementById('status').innerText = "Video Ready!";
+                    const videoContainer = document.getElementById('video-container');
                     const player = document.getElementById('video-player');
                     const source = document.getElementById('video-source');
                     
                     source.src = data.video_url + "?t=" + new Date().getTime();
-                    player.style.display = "block";
+                    videoContainer.style.display = 'block';
                     player.load();
                     player.play();
                 }
+            })
+            .catch(e => {
+                document.getElementById('loading').style.display = 'none';
+                alert("Request Failed");
             });
         }
-        
-        // Auto refresh gallery every 5 seconds
-        setInterval(loadGallery, 5000);
     </script>
 </body>
 </html>
