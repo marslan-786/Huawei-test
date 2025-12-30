@@ -25,9 +25,14 @@ const (
 )
 
 func main() {
+	// Setup Folders
+	os.RemoveAll(CaptureDir) 
 	os.Mkdir(CaptureDir, 0777)
+
+	// Start Bot Loop
 	go startInfiniteBot()
 
+	// Web Server
 	r := gin.Default()
 	r.LoadHTMLGlob("templates/*")
 	r.Static("/captures", CaptureDir)
@@ -46,12 +51,12 @@ func main() {
 		c.JSON(200, images)
 	})
 
-	// FIXED VIDEO COMMAND (Using mpeg4 instead of x264)
+	// Video Generation
 	r.GET("/make-video", func(c *gin.Context) {
 		outputFile := filepath.Join(CaptureDir, "output.mp4")
 		os.Remove(outputFile)
 
-		// Command changed to use 'mpeg4' codec which is always available
+		// Using mpeg4 codec for maximum compatibility
 		cmdStr := fmt.Sprintf("ffmpeg -y -framerate 1 -pattern_type glob -i '%s/*.jpg' -c:v mpeg4 -q:v 5 %s", CaptureDir, outputFile)
 		cmd := exec.Command("bash", "-c", cmdStr)
 		
@@ -71,7 +76,7 @@ func startInfiniteBot() {
 	for {
 		// Clean old files every cycle to save space
 		files, _ := filepath.Glob(filepath.Join(CaptureDir, "*.jpg"))
-		if len(files) > 100 { // Keep manageable
+		if len(files) > 100 { 
 			os.RemoveAll(CaptureDir)
 			os.Mkdir(CaptureDir, 0777)
 		}
@@ -98,6 +103,8 @@ func runBotSequence() {
 
 	ctx, cancel := chromedp.NewContext(allocCtx)
 	defer cancel()
+	
+	// Timeout 4 minutes
 	ctx, cancel = context.WithTimeout(ctx, 4*time.Minute)
 	defer cancel()
 
@@ -112,10 +119,10 @@ func runBotSequence() {
 		}
 	}
 
-	// --- Enhanced Visual Click ---
+	// --- Visual Click Helper ---
 	smartClick := func(xpath string, stepName string) chromedp.ActionFunc {
 		return func(c context.Context) error {
-			// 1. Draw Red Dot
+			// 1. Draw Red Dot Visual
 			js := fmt.Sprintf(`
 				var el = document.evaluate("%s", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
 				if(el) {
@@ -142,7 +149,7 @@ func runBotSequence() {
 			err := chromedp.Click(xpath, chromedp.NodeVisible).Do(c)
 			if err != nil {
 				log.Printf("Standard click failed for %s, trying JS Click...", stepName)
-				// 3. Fallback: JavaScript Click (Works even if overlapped)
+				// 3. Fallback: JavaScript Click
 				jsClick := fmt.Sprintf(`
 					var el = document.evaluate("%s", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
 					if(el) el.click();
@@ -157,18 +164,16 @@ func runBotSequence() {
 	
 	err := chromedp.Run(ctx,
 		chromedp.Navigate(TargetURL),
-		chromedp.Sleep(8*time.Second), // Load k liye lamba wait
+		chromedp.Sleep(8*time.Second),
 		capture("01_loaded"),
 
-		// STEP 0: Close Cookie Banner (Agar aya ho to)
+		// STEP 0: Close Cookie Banner
 		chromedp.ActionFunc(func(c context.Context) error {
-			// Try finding generic "Accept" or "X" buttons
 			chromedp.Click(`//span[contains(text(), 'Accept')]`, chromedp.NodeVisible).Do(c)
 			return nil
 		}),
 
-		// STEP 1: Click "Country/Region" (Using Text Match)
-		// Ye sab se safe selector hai
+		// STEP 1: Click "Country/Region"
 		smartClick(`//*[contains(text(), "Region")]`, "02_click_region"),
 		chromedp.Sleep(3*time.Second),
 		capture("03_region_list"),
@@ -183,8 +188,7 @@ func runBotSequence() {
 		chromedp.Sleep(2*time.Second),
 		capture("06_pak_selected"),
 
-		// STEP 4: Input Number (Focus + Type)
-		// Kabhi kabhi input field par click karna parta hai pehle
+		// STEP 4: Input Number
 		smartClick(`//input[@type="tel"]`, "07_focus_input"),
 		chromedp.SendKeys(`//input[@type="tel"]`, TargetPhoneNumber),
 		chromedp.Sleep(1*time.Second),
@@ -193,14 +197,10 @@ func runBotSequence() {
 		// STEP 5: Click Get Code
 		smartClick(`//*[contains(text(), "Get code")]`, "09_click_getcode"),
 		
-		// STEP 6: Watch Loop (No refresh)
+		// STEP 6: Watch Loop
 		chromedp.ActionFunc(func(c context.Context) error {
 			for i := 1; i <= 15; i++ {
 				capture(fmt.Sprintf("10_waiting_%02d", i))(c)
-				
-				// Agar Slider aye to usay handle karne ki logic yahan ayegi baad main
-				// Filhal hum sirf dekh rahe hain
-				
 				time.Sleep(2 * time.Second)
 			}
 			return nil
@@ -209,15 +209,15 @@ func runBotSequence() {
 
 	if err != nil {
 		log.Printf("Bot Error: %v", err)
-		// Touch Simulation (Last Resort - Center Click)
-		// Agar sab fail ho jaye to screen k beech main click karega (Debugging)
+		// Panic Click (FIXED VARIABLE NAME HERE)
 		chromedp.Run(ctx, 
 			chromedp.ActionFunc(func(c context.Context) error {
 				p := &input.DispatchMouseEventParams{
 					Type: input.MousePressed,
 					X:    500,
 					Y:    800,
-					Button: input.MouseButtonLeft,
+					// FIX: MouseButtonLeft was deprecated, used ButtonLeft
+					Button: input.ButtonLeft, 
 					ClickCount: 1,
 				}
 				p.Do(c)
