@@ -11,7 +11,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/chromedp/cdproto/input"
+	// FIX: "input" package ko hata diya hai kyun k ab hum high-level function use karenge
 	"github.com/chromedp/chromedp"
 	"github.com/gin-gonic/gin"
 )
@@ -209,22 +209,10 @@ func runBotSequence() {
 
 	if err != nil {
 		log.Printf("Bot Error: %v", err)
-		// Panic Click (FIXED: Reverted to MouseButtonLeft)
+		
+		// FIX: High-Level API Use (No more variable errors)
 		chromedp.Run(ctx, 
-			chromedp.ActionFunc(func(c context.Context) error {
-				p := &input.DispatchMouseEventParams{
-					Type: input.MousePressed,
-					X:    500,
-					Y:    800,
-					// FIX: Yahan MouseButtonLeft hi sahi hai
-					Button: input.MouseButtonLeft, 
-					ClickCount: 1,
-				}
-				p.Do(c)
-				p.Type = input.MouseReleased
-				p.Do(c)
-				return nil
-			}),
+			chromedp.MouseClickXY(500, 800),
 			capture("99_panic_click"),
 		)
 	}
